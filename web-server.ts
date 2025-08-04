@@ -62,7 +62,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   // MCP endpoint - handle MCP protocol requests
-  if (url.pathname === "/mcp" && req.method === "POST") {
+  if (url.pathname === "/mcp" && (req.method === "POST" || req.method === "GET")) {
     try {
       const body = await req.json();
       
