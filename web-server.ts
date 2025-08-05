@@ -1,215 +1,122 @@
-// web-server.ts - HTTP wrapper for Deno Deploy
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
+import { McpServer } from "npm:@modelcontextprotocol/sdk@^1.11.1/server/mcp.js";
+import { z } from "npm:zod@^3.24.4";
+import {
+  getNegatedBrowserBaselineStatusAsMCPContent,
+  getWebFeatureBaselineStatusAsMCPContent,
+} from "./tools/index.ts";
+import { BROWSERS, type Browsers } from "./types.ts";
+import DenoJSON from "./deno.json" with { type: "json" };
 
-// Import your MCP server logic
-// You might need to adapt this import based on the actual structure
-// import { BaselineMCPServer } from "./baseline-mcp-server.ts";
+// MCPサーバーの初期化
+const server = new McpServer({
+  name: "Baseline MCP Server",
+  version: DenoJSON.version,
+  capabilities: {
+    tools: {},
+  },
+});
 
-// Simple HTTP handler that wraps the MCP server
-async function handler(req: Request): Promise<Response> {
-  const url = new URL(req.url);
+// 特定の機能のBaselineステータスを取得
+server.tool(
+  "get_web_feature_baseline_status",
+  "クエリを指定し、Web Platform Dashboardからfeatureの結果を取得します",
+  {
+    query: z.string().array().describe("調べたい機能の名前"),
+  },
+  async ({ query }: { query: string | string[] }) => {
+    return await getWebFeatureBaselineStatusAsMCPContent(query);
+  },
+);
+
+// 特定のブラウザを除外した機能を検索
+server.tool(
+  "get_negated_browser_baseline_status",
+  "特定のブラウザを除外して、Web Platform Dashboardからfeatureの結果を取得します",
+  {
+    query: z.enum(BROWSERS).describe(
+      "除外したいブラウザの名前（chrome, edge, firefox, safari）",
+    ),
+  },
+  async ({ query }: { query: Browsers }) => {
+    return await getNegatedBrowserBaselineStatusAsMCPContent(query);
+  },
+);
+
+async function handler(request: Request): Promise<Response> {
+  const url = new URL(request.url);
   
-  // Handle CORS
+  // CORS headers
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
 
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
+  // Handle preflight requests
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  // Root endpoint - show server info
+  if (url.pathname === "/") {
+    const info = {
+      name: "Baseline MCP Server",
+      version: DenoJSON.version,
+      description: "Web Platform APIのサポート状況を提供するModel Context Protocolサーバー",
+      endpoints: {
+        "/mcp": "MCP protocol endpoint",
+        "/health": "Health check endpoint"
+      },
+      tools: [
+        "get_web_feature_baseline_status",
+        "get_negated_browser_baseline_status"
+      ]
+    };
+    
+    return new Response(JSON.stringify(info, null, 2), {
+      headers: { 
+        "Content-Type": "application/json",
+        ...corsHeaders
+      },
+    });
   }
 
   // Health check endpoint
-  if (url.pathname === "/" || url.pathname === "/health") {
-    return new Response(
-      JSON.stringify({ 
-        status: "ok", 
-        service: "Baseline MCP Server",
-        endpoints: {
-          health: "/health",
-          mcp: "/mcp",
-          info: "/info"
-        }
-      }), 
-      { 
-        status: 200, 
+  if (url.pathname === "/health") {
+    return new Response(JSON.stringify({ status: "ok", timestamp: new Date().toISOString() }), {
+      headers: { 
+        "Content-Type": "application/json",
+        ...corsHeaders
+      },
+    });
+  }
+
+  // MCP endpoint
+  if (url.pathname === "/mcp" && request.method === "POST") {
+    try {
+      const body = await request.json();
+      const response = await server.handleRequest(body);
+      
+      return new Response(JSON.stringify(response), {
         headers: { 
           "Content-Type": "application/json",
           ...corsHeaders
-        } 
-      }
-    );
-  }
-
-  // Info endpoint
-  if (url.pathname === "/info") {
-    return new Response(
-      JSON.stringify({
-        name: "Baseline MCP Server",
-        description: "Provides Web Platform API baseline compatibility status",
-        version: "1.0.0",
-        api_source: "https://api.webstatus.dev"
-      }),
-      {
-        status: 200,
-        headers: {
-          "Content-Type": "application/json",
-          ...corsHeaders
-        }
-      }
-    );
-  }
-
-  // MCP endpoint - handle MCP protocol requests
-  if (url.pathname === "/mcp" && (req.method === "POST" || req.method === "GET")) {
-    try {
-      const body = await req.json();
-      
-      // Basic MCP request handling
-      if (body.method === "tools/list") {
-        return new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            result: {
-              tools: [
-                {
-                  name: "get_web_feature_baseline_status",
-                  description: "Get Web Platform API baseline compatibility status",
-                  inputSchema: {
-                    type: "object",
-                    properties: {
-                      query: {
-                        type: "string",
-                        description: "Web feature or API name to search for"
-                      }
-                    },
-                    required: ["query"]
-                  }
-                }
-              ]
-            },
-            id: body.id
-          }),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
-              ...corsHeaders
-            }
-          }
-        );
-      }
-
-      // Handle tool calls
-      if (body.method === "tools/call" && body.params?.name === "get_web_feature_baseline_status") {
-        const query = body.params.arguments?.query;
-        
-        if (!query) {
-          return new Response(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: {
-                code: -32602,
-                message: "Invalid params: query required"
-              },
-              id: body.id
-            }),
-            {
-              status: 400,
-              headers: {
-                "Content-Type": "application/json",
-                ...corsHeaders
-              }
-            }
-          );
-        }
-
-        // Call the Web Platform Dashboard API
-        try {
-          const apiUrl = `https://api.webstatus.dev/v1/features?q=${encodeURIComponent(query)}`;
-          const apiResponse = await fetch(apiUrl);
-          
-          if (!apiResponse.ok) {
-            throw new Error(`API request failed: ${apiResponse.status}`);
-          }
-
-          const apiData = await apiResponse.json();
-          
-          return new Response(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              result: {
-                query: query,
-                features: apiData.features || [],
-                source: "Web Platform Dashboard API"
-              },
-              id: body.id
-            }),
-            {
-              status: 200,
-              headers: {
-                "Content-Type": "application/json",
-                ...corsHeaders
-              }
-            }
-          );
-        } catch (error) {
-          return new Response(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: {
-                code: -32603,
-                message: "Internal error",
-                data: error.message
-              },
-              id: body.id
-            }),
-            {
-              status: 500,
-              headers: {
-                "Content-Type": "application/json",
-                ...corsHeaders
-              }
-            }
-          );
-        }
-      }
-
-      // Unknown method
-      return new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          error: {
-            code: -32601,
-            message: "Method not found"
-          },
-          id: body.id
-        }),
-        {
-          status: 404,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
-        }
-      );
-
+        },
+      });
     } catch (error) {
+      console.error("MCP request error:", error);
       return new Response(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          error: {
-            code: -32700,
-            message: "Parse error"
-          }
-        }),
-        {
-          status: 400,
-          headers: {
+        JSON.stringify({ 
+          error: "Internal server error",
+          message: error.message 
+        }), 
+        { 
+          status: 500,
+          headers: { 
             "Content-Type": "application/json",
             ...corsHeaders
-          }
+          },
         }
       );
     }
@@ -223,5 +130,8 @@ async function handler(req: Request): Promise<Response> {
 }
 
 // Start the server
-console.log("Starting Baseline MCP Server on Deno Deploy...");
-await serve(handler, { port: 8000 });
+const port = parseInt(Deno.env.get("PORT") || "8000");
+console.log(`Baseline MCP Server starting on port ${port}`);
+console.log(`Visit http://localhost:${port} for server info`);
+
+serve(handler, { port });
