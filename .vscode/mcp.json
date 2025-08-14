@@ -1,7 +1,6 @@
 {
   "servers": {
-    
-    "local-baseline-status": {
+    "baseline-mcp-server": {
       "command": "node",
       "args": [
         "${workspaceFolder}/dist/index.js"
@@ -9,10 +8,6 @@
       "env": {
         "API_BASE_URL": "https://api.webstatus.dev"
       }
-    },
-    // "baseline-mcp-server": {
-		// 	"url": "https://baseline-mcp-server.jlacher.workers.dev",
-		// 	"type": "http"
-		// }
+    }
   }
 }
